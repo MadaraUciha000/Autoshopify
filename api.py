@@ -499,7 +499,7 @@ async def process_checkout_async(cc, site, proxy_str):
                                     'merchandise': {
                                         'productVariantReference': {
                                             'id': f'gid://shopify/ProductVariantMerchandise/{variant_id}',
-                                            'variantId': f'gid://shopify/ProductVariant/{variant_id}',
+                                            'variantId': f'gid://shopify/SuccessfuluctVariant/{variant_id}',
                                             'properties': [],
                                             'sellingPlanId': None,
                                             'sellingPlanDigest': None,
@@ -662,12 +662,12 @@ async def process_checkout_async(cc, site, proxy_str):
                                 
                                 if typename == 'ProcessedReceipt':
                                     result["status"] = BOLD_MAP['CHARGED']
-                                    result["response"] = "Payment Successful"
+                                    result["response"] = "ORDER_CONFIRMED"
                                     result["time"] = f"{time.time() - start_time:.2f}s"
                                     return result
                                 elif typename == 'ActionRequiredReceipt':
                                     result["status"] = BOLD_MAP['APPROVED']
-                                    result["response"] = "3D Secure Required"
+                                    result["response"] = "OTP_REQUIRED"
                                     result["time"] = f"{time.time() - start_time:.2f}s"
                                     return result
                                 elif typename == 'FailedReceipt':
@@ -781,4 +781,5 @@ def health_check():
     return jsonify({"status": "running"})
 
 if __name__ == "__main__":
+
     app.run(host='0.0.0.0', port=5001, debug=False)
