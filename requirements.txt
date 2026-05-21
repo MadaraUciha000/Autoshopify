@@ -1,6 +1,10 @@
 Flask==2.3.3
 httpx==0.24.1
 asyncio==3.4.3
+aiohttp
+aiofiles
+bs4
+user_agent
 beautifulsoup4==4.12.2
 fake-useragent==1.4.0
 urllib3==2.0.7
